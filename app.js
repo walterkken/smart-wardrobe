@@ -53,6 +53,7 @@ const CONDITION_LABELS = {
 
 const state = loadState();
 let pendingImages = [];
+let pendingAnalysis = null;
 let lastGeneratedOutfits = [];
 
 const $ = (selector) => document.querySelector(selector);
@@ -66,6 +67,15 @@ const refs = {
   uploadEmpty: $("#uploadEmpty"),
   uploadCount: $("#uploadCount"),
   clearPhotoBtn: $("#clearPhotoBtn"),
+  recognitionPanel: $("#recognitionPanel"),
+  recognitionStatus: $("#recognitionStatus"),
+  recognizedColor: $("#recognizedColor"),
+  recognizedSwatch: $("#recognizedSwatch"),
+  recognizedFit: $("#recognizedFit"),
+  recognizedStyle: $("#recognizedStyle"),
+  recognizedTags: $("#recognizedTags"),
+  applyRecognitionBtn: $("#applyRecognitionBtn"),
+  reanalyzeBtn: $("#reanalyzeBtn"),
   itemName: $("#itemName"),
   itemCategory: $("#itemCategory"),
   itemColor: $("#itemColor"),
@@ -134,12 +144,15 @@ function bindEvents() {
     const files = Array.from(event.target.files || []);
     pendingImages = await Promise.all(files.map(readAndResizeImage));
     updatePhotoPreview();
+    analyzePendingImage();
   });
 
   refs.clearPhotoBtn.addEventListener("click", () => {
     pendingImages = [];
+    pendingAnalysis = null;
     refs.itemPhotos.value = "";
     updatePhotoPreview();
+    renderRecognition(null);
   });
 
   refs.itemForm.addEventListener("submit", (event) => {
@@ -148,6 +161,11 @@ function bindEvents() {
   });
 
   refs.resetFormBtn.addEventListener("click", resetForm);
+  refs.applyRecognitionBtn.addEventListener("click", applyRecognition);
+  refs.reanalyzeBtn.addEventListener("click", analyzePendingImage);
+  refs.itemCategory.addEventListener("change", () => {
+    if (pendingImages.length) analyzePendingImage();
+  });
 
   [refs.searchInput, refs.filterCategory, refs.filterStyle].forEach((input) => {
     input.addEventListener("input", renderCloset);
@@ -378,6 +396,7 @@ function editItem(id) {
   refs.favoriteItem.checked = item.favorite;
   pendingImages = item.image ? [{ dataUrl: item.image, name: item.name }] : [];
   updatePhotoPreview();
+  analyzePendingImage();
   activateTab("wardrobe");
   toast("正在编辑衣物");
 }
@@ -398,8 +417,10 @@ function resetForm() {
   refs.itemWarmth.value = "medium";
   refs.itemSeason.value = "all";
   pendingImages = [];
+  pendingAnalysis = null;
   refs.itemPhotos.value = "";
   updatePhotoPreview();
+  renderRecognition(null);
 }
 
 function updatePhotoPreview() {
@@ -415,6 +436,414 @@ function updatePhotoPreview() {
   refs.photoPreview.hidden = true;
   refs.uploadEmpty.hidden = false;
   refs.uploadCount.textContent = "未选择图片";
+}
+
+async function analyzePendingImage() {
+  if (!pendingImages.length) {
+    pendingAnalysis = null;
+    renderRecognition(null);
+    return;
+  }
+
+  renderRecognition({ loading: true });
+  try {
+    pendingAnalysis = await analyzeWardrobeImage(pendingImages[0].dataUrl, refs.itemCategory.value);
+    renderRecognition(pendingAnalysis);
+    toast("已识别照片标签，可一键应用");
+  } catch {
+    pendingAnalysis = null;
+    renderRecognition({
+      error: true,
+      message: "识别失败，请换一张光线更清楚、背景更干净的照片",
+    });
+  }
+}
+
+function renderRecognition(result) {
+  if (!result) {
+    refs.recognitionPanel.hidden = true;
+    refs.recognizedTags.innerHTML = "";
+    return;
+  }
+
+  refs.recognitionPanel.hidden = false;
+  refs.applyRecognitionBtn.disabled = Boolean(result.loading || result.error);
+  refs.reanalyzeBtn.disabled = Boolean(result.loading);
+
+  if (result.loading) {
+    refs.recognitionStatus.textContent = "正在分析颜色、轮廓和标签...";
+    refs.recognizedColor.textContent = "--";
+    refs.recognizedFit.textContent = "--";
+    refs.recognizedStyle.textContent = "--";
+    refs.recognizedSwatch.style.setProperty("--recognized-swatch", "#dce3e1");
+    refs.recognizedTags.innerHTML = `<span class="pill">分析中</span>`;
+    return;
+  }
+
+  if (result.error) {
+    refs.recognitionStatus.textContent = result.message;
+    refs.recognizedColor.textContent = "--";
+    refs.recognizedFit.textContent = "--";
+    refs.recognizedStyle.textContent = "--";
+    refs.recognizedSwatch.style.setProperty("--recognized-swatch", "#dce3e1");
+    refs.recognizedTags.innerHTML = `<span class="pill">请手动填写</span>`;
+    return;
+  }
+
+  refs.recognitionStatus.textContent = `置信度 ${result.confidence}% · 基于本地照片分析`;
+  refs.recognizedColor.textContent = colorLabel(result.color);
+  refs.recognizedFit.textContent = result.fit;
+  refs.recognizedStyle.textContent = STYLE_LABELS[result.style];
+  refs.recognizedSwatch.style.setProperty("--recognized-swatch", COLORS[result.color]?.hex || result.hex);
+  refs.recognizedTags.innerHTML = result.tags.map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join("");
+}
+
+function applyRecognition() {
+  if (!pendingAnalysis) {
+    toast("还没有可应用的识别结果");
+    return;
+  }
+
+  refs.itemColor.value = pendingAnalysis.color;
+  refs.itemStyle.value = pendingAnalysis.style;
+  refs.itemWarmth.value = pendingAnalysis.warmth;
+
+  const existingTags = refs.itemTags.value
+    .split(/[,，、\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  const tags = uniqueValues([...existingTags, ...pendingAnalysis.tags]);
+  refs.itemTags.value = tags.join(", ");
+
+  toast("已应用颜色、款式、版型和标签");
+}
+
+async function analyzeWardrobeImage(dataUrl, category) {
+  const image = await loadImage(dataUrl);
+  const maxSide = 180;
+  const ratio = Math.min(1, maxSide / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * ratio));
+  const height = Math.max(1, Math.round(image.height * ratio));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, width, height).data;
+  const border = averageBorderColor(imageData, width, height);
+  const foreground = extractForegroundPixels(imageData, width, height, border);
+  const pixels = foreground.pixels.length > 80 ? foreground.pixels : extractCentralPixels(imageData, width, height);
+  const dominant = dominantColor(pixels);
+  const colorKey = nearestPaletteColor(dominant);
+  const hsl = rgbToHsl(dominant.r, dominant.g, dominant.b);
+  const fit = inferFit(foreground, width, height, category);
+  const pattern = inferPattern(pixels);
+  const style = inferVisualStyle({ colorKey, hsl, category, pattern, fit });
+  const warmth = inferVisualWarmth({ colorKey, hsl, category, foreground });
+  const toneTags = visualToneTags({ colorKey, hsl, pattern });
+  const categoryTags = visualCategoryTags(category, fit, style);
+  const tags = uniqueValues([
+    colorLabel(colorKey),
+    fit,
+    pattern.label,
+    ...toneTags,
+    ...categoryTags,
+  ]).slice(0, 10);
+  const confidence = Math.round(
+    Math.max(46, Math.min(92, 52 + foreground.coverage * 48 + Math.min(pixels.length / 1800, 1) * 16 - pattern.noisePenalty)),
+  );
+
+  return {
+    color: colorKey,
+    hex: rgbToHex(dominant),
+    fit,
+    style,
+    warmth,
+    tags,
+    confidence,
+  };
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+}
+
+function averageBorderColor(data, width, height) {
+  const samples = [];
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 32));
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      if (x < step * 2 || y < step * 2 || x > width - step * 3 || y > height - step * 3) {
+        samples.push(pixelAt(data, width, x, y));
+      }
+    }
+  }
+  return averageRgb(samples);
+}
+
+function extractForegroundPixels(data, width, height, border) {
+  const pixels = [];
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  const rowCounts = Array(height).fill(0);
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 100));
+
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const rgb = pixelAt(data, width, x, y);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      const borderDistance = colorDistance(rgb, border);
+      const isBackgroundWhite = border.r > 220 && border.g > 220 && border.b > 220;
+      const differsFromBackground = borderDistance > (isBackgroundWhite ? 30 : 42);
+      const isUsefulPixel = differsFromBackground || (hsl.s > 0.22 && hsl.l < 0.92);
+      if (!isUsefulPixel) continue;
+
+      pixels.push(rgb);
+      rowCounts[y] += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  const bboxWidth = Math.max(0, maxX - minX + step);
+  const bboxHeight = Math.max(0, maxY - minY + step);
+  const coverage = pixels.length / Math.max(1, (width / step) * (height / step));
+
+  return {
+    pixels,
+    bboxWidth,
+    bboxHeight,
+    bboxRatio: bboxHeight ? bboxWidth / bboxHeight : 1,
+    coverage,
+    rowCounts,
+  };
+}
+
+function extractCentralPixels(data, width, height) {
+  const pixels = [];
+  const xStart = Math.floor(width * 0.18);
+  const xEnd = Math.ceil(width * 0.82);
+  const yStart = Math.floor(height * 0.12);
+  const yEnd = Math.ceil(height * 0.88);
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 90));
+
+  for (let y = yStart; y < yEnd; y += step) {
+    for (let x = xStart; x < xEnd; x += step) {
+      const rgb = pixelAt(data, width, x, y);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      if (hsl.l > 0.97 || hsl.l < 0.03) continue;
+      pixels.push(rgb);
+    }
+  }
+  return pixels;
+}
+
+function dominantColor(pixels) {
+  if (!pixels.length) return { r: 140, g: 143, b: 145 };
+  const buckets = new Map();
+  for (const rgb of pixels) {
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const weight = 0.4 + hsl.s * 1.2 + (1 - Math.abs(hsl.l - 0.5)) * 0.6;
+    const key = `${Math.round(rgb.r / 24) * 24},${Math.round(rgb.g / 24) * 24},${Math.round(rgb.b / 24) * 24}`;
+    const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, weight: 0, count: 0 };
+    bucket.r += rgb.r * weight;
+    bucket.g += rgb.g * weight;
+    bucket.b += rgb.b * weight;
+    bucket.weight += weight;
+    bucket.count += 1;
+    buckets.set(key, bucket);
+  }
+
+  const best = Array.from(buckets.values()).sort((a, b) => b.count * b.weight - a.count * a.weight)[0];
+  return {
+    r: Math.round(best.r / best.weight),
+    g: Math.round(best.g / best.weight),
+    b: Math.round(best.b / best.weight),
+  };
+}
+
+function nearestPaletteColor(rgb) {
+  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  if (hsl.l < 0.16) return "black";
+  if (hsl.l > 0.88 && hsl.s < 0.18) return "white";
+  if (hsl.s < 0.12) return "gray";
+
+  let bestKey = "gray";
+  let bestDistance = Infinity;
+  for (const [key, color] of Object.entries(COLORS)) {
+    const paletteRgb = hexToRgb(color.hex);
+    const paletteHsl = rgbToHsl(paletteRgb.r, paletteRgb.g, paletteRgb.b);
+    const hueDistance = Math.min(Math.abs(hsl.h - paletteHsl.h), 360 - Math.abs(hsl.h - paletteHsl.h)) / 180;
+    const saturationDistance = Math.abs(hsl.s - paletteHsl.s);
+    const lightDistance = Math.abs(hsl.l - paletteHsl.l);
+    const distance = hueDistance * 2.2 + saturationDistance * 0.75 + lightDistance * 0.8;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestKey = key;
+    }
+  }
+  return bestKey;
+}
+
+function inferFit(foreground, width, height, category) {
+  if (category === "shoes") return foreground.bboxRatio > 1.5 ? "低帮/横向鞋型" : "厚底/高帮鞋型";
+  if (category === "accessory") return "小件配饰";
+
+  const bboxArea = foreground.bboxWidth * foreground.bboxHeight;
+  const frameArea = width * height;
+  const objectScale = bboxArea / Math.max(1, frameArea);
+  const verticalRatio = foreground.bboxHeight / Math.max(1, foreground.bboxWidth);
+
+  if (category === "bottom") {
+    if (verticalRatio > 1.9 && objectScale < 0.42) return "修身/窄版";
+    if (objectScale > 0.58) return "宽松/阔腿";
+    return "直筒版型";
+  }
+
+  if (category === "dress") {
+    if (foreground.bboxRatio > 0.72) return "A字/宽摆";
+    return "直筒/收身";
+  }
+
+  if (objectScale > 0.58 || foreground.coverage > 0.42) return "宽松/廓形";
+  if (verticalRatio > 1.38 && objectScale < 0.38) return "修身版型";
+  return "常规版型";
+}
+
+function inferPattern(pixels) {
+  if (pixels.length < 8) return { label: "纯色", noisePenalty: 0 };
+  const sample = pixels.slice(0, 1800);
+  const avg = averageRgb(sample);
+  const variance =
+    sample.reduce((sum, rgb) => sum + colorDistance(rgb, avg), 0) / Math.max(1, sample.length);
+  if (variance > 95) return { label: "图案/拼色", noisePenalty: 8 };
+  if (variance > 58) return { label: "纹理感", noisePenalty: 3 };
+  return { label: "纯色", noisePenalty: 0 };
+}
+
+function inferVisualStyle({ colorKey, hsl, category, pattern, fit }) {
+  const neutral = COLORS[colorKey]?.neutral;
+  if (category === "shoes" && ["white", "blue", "teal", "gray"].includes(colorKey)) return "sport";
+  if (category === "outer" && ["green", "brown", "teal"].includes(colorKey)) return "outdoor";
+  if (category === "dress" && ["red", "pink", "purple", "green"].includes(colorKey)) return "date";
+  if (neutral && hsl.l < 0.36 && pattern.label === "纯色") return "formal";
+  if (neutral || ["navy", "beige", "brown"].includes(colorKey)) return "commute";
+  if (fit.includes("宽松") || pattern.label !== "纯色") return "casual";
+  if (["red", "pink", "purple"].includes(colorKey) && hsl.s > 0.36) return "date";
+  return "casual";
+}
+
+function inferVisualWarmth({ colorKey, hsl, category, foreground }) {
+  if (category === "shoes" || category === "accessory") return "medium";
+  if (hsl.l < 0.25 || foreground.coverage > 0.48 || ["black", "navy", "brown"].includes(colorKey)) return "warm";
+  if (hsl.l > 0.72 || ["white", "yellow", "pink"].includes(colorKey)) return "light";
+  return "medium";
+}
+
+function visualToneTags({ colorKey, hsl, pattern }) {
+  const tags = [];
+  if (COLORS[colorKey]?.neutral) tags.push("中性色");
+  if (hsl.l < 0.32) tags.push("深色");
+  if (hsl.l > 0.72) tags.push("浅色");
+  if (hsl.s > 0.48) tags.push("亮色");
+  if (hsl.s < 0.16) tags.push("低饱和");
+  if (pattern.label !== "纯色") tags.push("有设计感");
+  return tags;
+}
+
+function visualCategoryTags(category, fit, style) {
+  const tags = [STYLE_LABELS[style]];
+  if (category === "top") tags.push("上衣");
+  if (category === "bottom") tags.push("下装");
+  if (category === "outer") tags.push("外套层");
+  if (category === "dress") tags.push("连身款");
+  if (category === "shoes") tags.push("鞋履");
+  if (fit.includes("宽松") || fit.includes("廓形")) tags.push("松弛感");
+  if (fit.includes("修身")) tags.push("利落");
+  return tags;
+}
+
+function pixelAt(data, width, x, y) {
+  const index = (y * width + x) * 4;
+  return { r: data[index], g: data[index + 1], b: data[index + 2] };
+}
+
+function averageRgb(pixels) {
+  if (!pixels.length) return { r: 140, g: 143, b: 145 };
+  const total = pixels.reduce(
+    (sum, rgb) => {
+      sum.r += rgb.r;
+      sum.g += rgb.g;
+      sum.b += rgb.b;
+      return sum;
+    },
+    { r: 0, g: 0, b: 0 },
+  );
+  return {
+    r: Math.round(total.r / pixels.length),
+    g: Math.round(total.g / pixels.length),
+    b: Math.round(total.b / pixels.length),
+  };
+}
+
+function colorDistance(a, b) {
+  return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+}
+
+function hexToRgb(hex) {
+  const clean = hex.replace("#", "");
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16),
+  };
+}
+
+function rgbToHex(rgb) {
+  return `#${[rgb.r, rgb.g, rgb.b].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      default:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h *= 60;
+  }
+
+  return { h, s, l };
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function readAndResizeImage(file) {

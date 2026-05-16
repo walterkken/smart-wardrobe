@@ -387,6 +387,80 @@ label.file-label:focus-within {
   font-size: 13px;
 }
 
+.recognition-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #c9d6d3;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(12, 124, 116, 0.08), transparent 60%),
+    #fbfcfb;
+}
+
+.recognition-panel[hidden] {
+  display: none;
+}
+
+.recognition-heading,
+.recognition-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recognition-heading strong,
+.recognition-card strong {
+  color: var(--ink);
+}
+
+.recognition-heading small {
+  display: block;
+  margin-top: 3px;
+}
+
+.recognition-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recognition-card {
+  position: relative;
+  min-height: 74px;
+  align-items: flex-start;
+  flex-direction: column;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.recognition-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recognition-card i {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(31, 37, 40, 0.18);
+  border-radius: 999px;
+  background: var(--recognized-swatch, #ddd);
+}
+
+.recognition-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .check-label {
   display: inline-flex;
   align-items: center;
@@ -738,6 +812,7 @@ label.file-label:focus-within {
   .form-grid,
   .control-grid,
   .filters,
+  .recognition-grid,
   .rule-grid {
     grid-template-columns: 1fr;
   }

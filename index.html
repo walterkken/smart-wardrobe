@@ -85,6 +85,33 @@
                 <button id="clearPhotoBtn" class="text-button" type="button">清除图片</button>
               </div>
 
+              <section class="recognition-panel" id="recognitionPanel" hidden aria-live="polite">
+                <div class="recognition-heading">
+                  <div>
+                    <strong>照片识别</strong>
+                    <small id="recognitionStatus">等待上传照片</small>
+                  </div>
+                  <button class="text-button" id="reanalyzeBtn" type="button">重新识别</button>
+                </div>
+                <div class="recognition-grid">
+                  <div class="recognition-card">
+                    <span>颜色</span>
+                    <strong id="recognizedColor">--</strong>
+                    <i id="recognizedSwatch" aria-hidden="true"></i>
+                  </div>
+                  <div class="recognition-card">
+                    <span>版型</span>
+                    <strong id="recognizedFit">--</strong>
+                  </div>
+                  <div class="recognition-card">
+                    <span>款式</span>
+                    <strong id="recognizedStyle">--</strong>
+                  </div>
+                </div>
+                <div class="recognition-tags" id="recognizedTags"></div>
+                <button class="ghost-button" id="applyRecognitionBtn" type="button">应用识别结果</button>
+              </section>
+
               <div class="form-grid">
                 <label>
                   <span>名称</span>
