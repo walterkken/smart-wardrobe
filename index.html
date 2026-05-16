@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>智能衣橱搭配助手</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">衣</div>
+          <div>
+            <h1>智能衣橱</h1>
+            <p>拍照入柜，按颜色、款式和天气自动推荐穿搭。</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost-button" id="seedBtn" type="button" title="载入示例衣橱">
+            <span aria-hidden="true">+</span>
+            示例
+          </button>
+          <button class="ghost-button" id="exportBtn" type="button" title="导出衣橱数据">
+            <span aria-hidden="true">↓</span>
+            导出
+          </button>
+          <label class="ghost-button file-label" title="导入衣橱数据">
+            <span aria-hidden="true">↑</span>
+            导入
+            <input id="importInput" type="file" accept="application/json" hidden />
+          </label>
+        </div>
+      </header>
+
+      <section class="metric-strip" aria-label="衣橱概览">
+        <div>
+          <span id="statItems">0</span>
+          <small>件衣物</small>
+        </div>
+        <div>
+          <span id="statOutfits">0</span>
+          <small>套收藏</small>
+        </div>
+        <div>
+          <span id="statWeather">未设置</span>
+          <small>当前天气</small>
+        </div>
+        <div>
+          <span id="statCoverage">待入柜</span>
+          <small>品类完整度</small>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="功能导航">
+        <button class="tab-button is-active" data-tab="wardrobe" type="button">衣橱</button>
+        <button class="tab-button" data-tab="recommend" type="button">搭配</button>
+        <button class="tab-button" data-tab="weather" type="button">天气</button>
+        <button class="tab-button" data-tab="saved" type="button">方案</button>
+      </nav>
+
+      <section class="tab-panel is-active" id="tab-wardrobe">
+        <div class="layout-grid">
+          <section class="panel intake-panel" aria-labelledby="intakeTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="intakeTitle">衣物入柜</h2>
+                <p>支持手机拍照或批量上传，多张图片会按同一标签一次入柜。</p>
+              </div>
+            </div>
+
+            <form id="itemForm" class="item-form">
+              <input id="editId" type="hidden" />
+
+              <label class="image-uploader" for="itemPhotos">
+                <input id="itemPhotos" type="file" accept="image/*" capture="environment" multiple />
+                <img id="photoPreview" alt="衣物照片预览" hidden />
+                <span class="upload-empty" id="uploadEmpty">
+                  <strong>拍照或上传衣物图片</strong>
+                  <small>上衣、裤子、外套、鞋子、配饰都可以</small>
+                </span>
+              </label>
+              <div class="upload-row">
+                <span id="uploadCount">未选择图片</span>
+                <button id="clearPhotoBtn" class="text-button" type="button">清除图片</button>
+              </div>
+
+              <div class="form-grid">
+                <label>
+                  <span>名称</span>
+                  <input id="itemName" type="text" placeholder="例如：白色牛津衬衫" />
+                </label>
+                <label>
+                  <span>品类</span>
+                  <select id="itemCategory">
+                    <option value="top">上装</option>
+                    <option value="bottom">下装</option>
+                    <option value="dress">连体/裙装</option>
+                    <option value="outer">外套</option>
+                    <option value="shoes">鞋子</option>
+                    <option value="accessory">配饰</option>
+                  </select>
+                </label>
+                <label>
+                  <span>主色</span>
+                  <select id="itemColor"></select>
+                </label>
+                <label>
+                  <span>厚薄</span>
+                  <select id="itemWarmth">
+                    <option value="light">轻薄</option>
+                    <option value="medium" selected>常规</option>
+                    <option value="warm">保暖</option>
+                  </select>
+                </label>
+                <label>
+                  <span>风格</span>
+                  <select id="itemStyle">
+                    <option value="casual">休闲</option>
+                    <option value="commute">通勤</option>
+                    <option value="formal">正式</option>
+                    <option value="sport">运动</option>
+                    <option value="date">约会</option>
+                    <option value="outdoor">户外</option>
+                  </select>
+                </label>
+                <label>
+                  <span>季节</span>
+                  <select id="itemSeason">
+                    <option value="all">四季</option>
+                    <option value="spring">春秋</option>
+                    <option value="summer">夏季</option>
+                    <option value="winter">冬季</option>
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                <span>标签</span>
+                <input id="itemTags" type="text" placeholder="例如：棉质, 防水, 宽松, 约会" />
+              </label>
+
+              <div class="switch-row">
+                <label class="check-label">
+                  <input id="rainReady" type="checkbox" />
+                  <span>雨天可穿</span>
+                </label>
+                <label class="check-label">
+                  <input id="favoriteItem" type="checkbox" />
+                  <span>常穿单品</span>
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button class="primary-button" type="submit">
+                  <span aria-hidden="true">✓</span>
+                  保存入柜
+                </button>
+                <button class="ghost-button" id="resetFormBtn" type="button">重置</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel closet-panel" aria-labelledby="closetTitle">
+            <div class="panel-heading closet-heading">
+              <div>
+                <h2 id="closetTitle">我的衣橱</h2>
+                <p id="closetHint">先录入几件上装、下装和鞋子，就能生成完整搭配。</p>
+              </div>
+            </div>
+
+            <div class="filters">
+              <label class="search-field">
+                <span class="sr-only">搜索衣物</span>
+                <input id="searchInput" type="search" placeholder="搜索名称、标签或风格" />
+              </label>
+              <select id="filterCategory" aria-label="按品类筛选">
+                <option value="all">全部品类</option>
+                <option value="top">上装</option>
+                <option value="bottom">下装</option>
+                <option value="dress">连体/裙装</option>
+                <option value="outer">外套</option>
+                <option value="shoes">鞋子</option>
+                <option value="accessory">配饰</option>
+              </select>
+              <select id="filterStyle" aria-label="按风格筛选">
+                <option value="all">全部风格</option>
+                <option value="casual">休闲</option>
+                <option value="commute">通勤</option>
+                <option value="formal">正式</option>
+                <option value="sport">运动</option>
+                <option value="date">约会</option>
+                <option value="outdoor">户外</option>
+              </select>
+            </div>
+
+            <div class="closet-grid" id="closetGrid" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-recommend">
+        <div class="recommend-layout">
+          <section class="panel recommendation-controls" aria-labelledby="recommendTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="recommendTitle">今日搭配推荐</h2>
+                <p>按天气、场景、颜色协调和风格一致性给衣物组合评分。</p>
+              </div>
+            </div>
+
+            <div class="control-grid">
+              <label>
+                <span>穿着场景</span>
+                <select id="recommendStyle">
+                  <option value="casual">休闲</option>
+                  <option value="commute">通勤</option>
+                  <option value="formal">正式</option>
+                  <option value="sport">运动</option>
+                  <option value="date">约会</option>
+                  <option value="outdoor">户外</option>
+                </select>
+              </label>
+              <label>
+                <span>颜色策略</span>
+                <select id="colorStrategy">
+                  <option value="balanced">自动协调</option>
+                  <option value="minimal">低调耐看</option>
+                  <option value="accent">突出亮点</option>
+                </select>
+              </label>
+              <label>
+                <span>气温</span>
+                <input id="recommendTemp" type="number" min="-20" max="45" step="1" />
+              </label>
+              <label>
+                <span>天气</span>
+                <select id="recommendCondition">
+                  <option value="clear">晴</option>
+                  <option value="cloudy">多云</option>
+                  <option value="rain">雨</option>
+                  <option value="snow">雪</option>
+                  <option value="wind">大风</option>
+                  <option value="hot">炎热</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button class="primary-button" id="generateBtn" type="button">
+                <span aria-hidden="true">↻</span>
+                生成搭配
+              </button>
+              <button class="ghost-button" id="useWeatherBtn" type="button">使用当前天气</button>
+            </div>
+          </section>
+
+          <section class="panel recommendation-results" aria-labelledby="resultTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="resultTitle">推荐结果</h2>
+                <p id="recommendSummary">还没有生成搭配。</p>
+              </div>
+            </div>
+            <div id="outfitResults" class="outfit-results"></div>
+          </section>
+
+          <section class="knowledge-panel" aria-labelledby="knowledgeTitle">
+            <h2 id="knowledgeTitle">搭配知识库</h2>
+            <div class="rule-grid">
+              <article>
+                <h3>颜色</h3>
+                <p>中性色做底，亮色做重点；同色系更稳，互补色更醒目，避免全身超过三个强色。</p>
+              </article>
+              <article>
+                <h3>款式</h3>
+                <p>正式度尽量一致：通勤单品配利落鞋，运动单品配轻便鞋，宽松上衣可搭更清爽的下装。</p>
+              </article>
+              <article>
+                <h3>天气</h3>
+                <p>低温优先保暖层，雨天优先防水鞋和外套，高温优先轻薄面料和浅色组合。</p>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-weather">
+        <div class="weather-layout">
+          <section class="panel weather-card" aria-labelledby="weatherTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="weatherTitle">天气设置</h2>
+                <p>可自动按城市查询，也可手动输入温度和天气。</p>
+              </div>
+            </div>
+
+            <div class="weather-current">
+              <strong id="weatherTemp">--°C</strong>
+              <span id="weatherCondition">未设置</span>
+              <small id="weatherMeta">没有天气数据时，推荐会使用手动输入。</small>
+            </div>
+
+            <div class="weather-actions">
+              <label>
+                <span>城市</span>
+                <input id="cityInput" type="text" placeholder="例如：上海" />
+              </label>
+              <button class="primary-button" id="fetchWeatherBtn" type="button">查询城市天气</button>
+              <button class="ghost-button" id="geoWeatherBtn" type="button">使用当前位置</button>
+            </div>
+          </section>
+
+          <section class="panel manual-weather" aria-labelledby="manualWeatherTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="manualWeatherTitle">手动天气</h2>
+                <p>适合网络不可用或想提前规划明天穿搭。</p>
+              </div>
+            </div>
+
+            <div class="control-grid">
+              <label>
+                <span>温度</span>
+                <input id="manualTemp" type="number" min="-20" max="45" step="1" value="22" />
+              </label>
+              <label>
+                <span>天气</span>
+                <select id="manualCondition">
+                  <option value="clear">晴</option>
+                  <option value="cloudy">多云</option>
+                  <option value="rain">雨</option>
+                  <option value="snow">雪</option>
+                  <option value="wind">大风</option>
+                  <option value="hot">炎热</option>
+                </select>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="primary-button" id="saveManualWeatherBtn" type="button">保存天气</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-saved">
+        <section class="panel saved-panel" aria-labelledby="savedTitle">
+          <div class="panel-heading">
+            <div>
+              <h2 id="savedTitle">收藏方案</h2>
+              <p>喜欢的搭配会保存在本机浏览器里，方便复穿。</p>
+            </div>
+            <button class="ghost-button danger" id="clearSavedBtn" type="button">清空收藏</button>
+          </div>
+          <div id="savedOutfits" class="saved-grid"></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
