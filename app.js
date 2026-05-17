@@ -52,9 +52,12 @@ const CONDITION_LABELS = {
 };
 
 const state = loadState();
+state.items = normalizeItems(state.items);
 let pendingImages = [];
 let pendingAnalysis = null;
 let lastGeneratedOutfits = [];
+let todayOutfit = null;
+let todayShuffleIndex = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -96,6 +99,11 @@ const refs = {
   statOutfits: $("#statOutfits"),
   statWeather: $("#statWeather"),
   statCoverage: $("#statCoverage"),
+  todayWeatherSummary: $("#todayWeatherSummary"),
+  todayOutfit: $("#todayOutfit"),
+  shuffleTodayBtn: $("#shuffleTodayBtn"),
+  planTodayBtn: $("#planTodayBtn"),
+  insightGrid: $("#insightGrid"),
   recommendStyle: $("#recommendStyle"),
   colorStrategy: $("#colorStrategy"),
   recommendTemp: $("#recommendTemp"),
@@ -169,6 +177,17 @@ function bindEvents() {
     if (pendingImages.length) analyzePendingImage();
   });
 
+  refs.shuffleTodayBtn.addEventListener("click", () => {
+    todayShuffleIndex += 1;
+    renderDashboard();
+  });
+
+  refs.planTodayBtn.addEventListener("click", () => {
+    syncWeatherControls();
+    generateAndRenderOutfits();
+    activateTab("recommend");
+  });
+
   [refs.searchInput, refs.filterCategory, refs.filterStyle].forEach((input) => {
     input.addEventListener("input", renderCloset);
     input.addEventListener("change", renderCloset);
@@ -227,12 +246,22 @@ function loadState() {
   }
 }
 
+function normalizeItems(items) {
+  return items.map((item) => ({
+    ...item,
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    wearCount: Number(item.wearCount || 0),
+    lastWornAt: item.lastWornAt || null,
+  }));
+}
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function renderAll() {
   renderStats();
+  renderDashboard();
   renderCloset();
   renderWeather();
   renderSavedOutfits();
@@ -248,6 +277,137 @@ function renderStats() {
   const hasDressPath = categories.has("dress") && categories.has("shoes");
   const complete = required.every((category) => categories.has(category)) || hasDressPath;
   refs.statCoverage.textContent = complete ? "可搭配" : `${categories.size}/6`;
+}
+
+function renderDashboard() {
+  const weather = state.weather || { temp: 22, condition: "clear" };
+  const style = inferTodayStyle(weather);
+  const outfits = generateOutfits({ weather, style, strategy: "balanced" });
+  refs.todayWeatherSummary.textContent = `${weather.temp}°C ${CONDITION_LABELS[weather.condition]}，默认按${STYLE_LABELS[style]}场景推荐。`;
+
+  if (!state.items.length) {
+    todayOutfit = null;
+    refs.todayOutfit.innerHTML = `<div class="empty-state">先上传衣物或点击右上角“示例”，今日推荐会自动生成。</div>`;
+    renderInsights();
+    return;
+  }
+
+  if (!outfits.length) {
+    todayOutfit = null;
+    refs.todayOutfit.innerHTML = `<div class="empty-state">当前衣橱还缺核心品类。至少需要上装 + 下装 + 鞋子，或连体/裙装 + 鞋子。</div>`;
+    renderInsights();
+    return;
+  }
+
+  todayOutfit = outfits[todayShuffleIndex % outfits.length];
+  refs.todayOutfit.innerHTML = renderTodayOutfitCard(todayOutfit, weather);
+  refs.todayOutfit.querySelector("[data-save-today]")?.addEventListener("click", () => saveOutfitSnapshot(todayOutfit));
+  refs.todayOutfit.querySelector("[data-wear-today]")?.addEventListener("click", () => markItemsWorn(todayOutfit.items.map((item) => item.id)));
+  renderInsights(outfits);
+}
+
+function inferTodayStyle(weather) {
+  const weekday = new Date().getDay();
+  const hasStyle = (style) => state.items.some((item) => item.style === style);
+  if (["rain", "snow", "wind"].includes(weather.condition) && hasStyle("outdoor")) return "outdoor";
+  if (weekday >= 1 && weekday <= 5 && hasStyle("commute")) return "commute";
+  if (weather.temp >= 28 && hasStyle("casual")) return "casual";
+  return hasStyle("casual") ? "casual" : state.items[0]?.style || "casual";
+}
+
+function renderTodayOutfitCard(outfit, weather) {
+  return `
+    <article class="today-card">
+      <div class="outfit-gallery">
+        ${outfit.items
+          .map(
+            (item) => `
+              <div class="outfit-thumb" title="${escapeHtml(item.name)}">
+                ${renderItemImage(item)}
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="today-copy">
+        <div class="score-row">
+          <strong>${STYLE_LABELS[outfit.style]} · 今日可穿</strong>
+          <span class="score">${outfit.score} 分</span>
+        </div>
+        <div class="today-meta">
+          <span class="pill">${weather.temp}°C</span>
+          <span class="pill">${CONDITION_LABELS[weather.condition]}</span>
+          <span class="pill">${outfit.items.length} 件单品</span>
+        </div>
+        <div class="outfit-items">
+          ${outfit.items.map((item) => `<span class="pill">${escapeHtml(item.name)}</span>`).join("")}
+        </div>
+        <ul class="reason-list">
+          ${outfit.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
+        </ul>
+        <div class="outfit-actions">
+          <button class="primary-button" type="button" data-wear-today>记录今天穿这套</button>
+          <button class="ghost-button" type="button" data-save-today>收藏方案</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderInsights(outfits = []) {
+  if (!state.items.length) {
+    refs.insightGrid.innerHTML = `
+      ${renderInsightCard("衣橱规模", "0", "添加衣服后，会开始统计颜色、品类和穿着频率。")}
+      ${renderInsightCard("搭配能力", "待入柜", "先补齐上装、下装和鞋子，或连体/裙装和鞋子。")}
+    `;
+    return;
+  }
+
+  const categories = new Set(state.items.map((item) => item.category));
+  const hasClassicCore = ["top", "bottom", "shoes"].every((category) => categories.has(category));
+  const hasDressCore = categories.has("dress") && categories.has("shoes");
+  const missing = ["top", "bottom", "shoes"]
+    .filter((category) => !categories.has(category))
+    .map((category) => CATEGORY_LABELS[category]);
+  const wearTotal = state.items.reduce((sum, item) => sum + Number(item.wearCount || 0), 0);
+  const unworn = state.items.filter((item) => !item.wearCount).length;
+  const mostWorn = [...state.items].sort((a, b) => Number(b.wearCount || 0) - Number(a.wearCount || 0))[0];
+  const stale = [...state.items]
+    .filter((item) => item.lastWornAt)
+    .sort((a, b) => new Date(a.lastWornAt) - new Date(b.lastWornAt))[0];
+  const dominantColor = dominantColorLabel();
+  const categorySpread = `${categories.size}/6`;
+  const readiness = hasClassicCore || hasDressCore ? "可搭配" : "待补齐";
+  const readyDetail =
+    hasClassicCore || hasDressCore
+      ? `今日可生成 ${outfits.length || generateOutfits({ weather: state.weather, style: inferTodayStyle(state.weather), strategy: "balanced" }).length} 套候选。`
+      : `建议优先补：${missing.join("、") || "鞋子"}`;
+
+  refs.insightGrid.innerHTML = `
+    ${renderInsightCard("搭配能力", readiness, readyDetail)}
+    ${renderInsightCard("品类覆盖", categorySpread, "上装、下装、裙装、外套、鞋子、配饰越完整，推荐越稳定。")}
+    ${renderInsightCard("穿着记录", `${wearTotal} 次`, unworn ? `${unworn} 件还没有记录穿过。` : "所有单品都已经有穿着记录。")}
+    ${renderInsightCard("主色结构", dominantColor, "颜色过于集中时，可以补一个中性色或重点色。")}
+    ${renderInsightCard("最高频单品", mostWorn ? escapeHtml(mostWorn.name) : "无", mostWorn ? wearLabel(mostWorn) : "暂无记录。")}
+    ${renderInsightCard("最久未穿", stale ? escapeHtml(stale.name) : "无", stale ? `上次：${formatDateShort(stale.lastWornAt)}` : "记录穿过后会显示闲置单品。")}
+  `;
+}
+
+function renderInsightCard(label, value, detail) {
+  return `
+    <article class="insight-card">
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>${detail}</small>
+    </article>
+  `;
+}
+
+function dominantColorLabel() {
+  const counts = new Map();
+  state.items.forEach((item) => counts.set(item.color, (counts.get(item.color) || 0) + 1));
+  const [colorKey, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] || [];
+  return colorKey ? `${colorLabel(colorKey)} ${count} 件` : "无";
 }
 
 function filteredItems() {
@@ -299,6 +459,9 @@ function renderCloset() {
             <div class="pill-row">
               ${item.tags.slice(0, 4).map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join("")}
             </div>
+            <div class="pill-row">
+              <span class="pill">${wearLabel(item)}</span>
+            </div>
             <div class="card-actions">
               <button class="icon-button" type="button" title="编辑" aria-label="编辑 ${escapeHtml(item.name)}" data-action="edit" data-id="${item.id}">✎</button>
               <button class="icon-button danger" type="button" title="删除" aria-label="删除 ${escapeHtml(item.name)}" data-action="delete" data-id="${item.id}">×</button>
@@ -347,6 +510,8 @@ function saveItemFromForm() {
   const newItems = payloads.map((image, index) => ({
     id: uid(),
     createdAt: new Date().toISOString(),
+    wearCount: 0,
+    lastWornAt: null,
     ...itemPayload(image, index, payloads.length),
   }));
 
@@ -1336,9 +1501,19 @@ function itemBaseScore(item, weather, style) {
   if (item.style === style) score += 18;
   if (item.favorite) score += 8;
   if (item.tags.includes("常穿")) score += 5;
+  score += rotationScore(item);
   score += warmthScore(item, weather);
   score += conditionScore(item, weather);
   score += seasonScore(item, weather);
+  return score;
+}
+
+function rotationScore(item) {
+  const wearCount = Number(item.wearCount || 0);
+  let score = wearCount ? Math.max(-6, 4 - wearCount * 1.4) : 6;
+  const days = daysSince(item.lastWornAt);
+  if (days !== null && days <= 1) score -= 8;
+  if (days !== null && days >= 21) score += 4;
   return score;
 }
 
@@ -1491,6 +1666,9 @@ function renderOutfitResults(outfits, weather) {
   refs.outfitResults.querySelectorAll("[data-save-outfit]").forEach((button) => {
     button.addEventListener("click", () => saveOutfit(button.dataset.saveOutfit));
   });
+  refs.outfitResults.querySelectorAll("[data-wear-outfit]").forEach((button) => {
+    button.addEventListener("click", () => markGeneratedOutfitWorn(button.dataset.wearOutfit));
+  });
 }
 
 function renderOutfitCard(outfit) {
@@ -1518,7 +1696,10 @@ function renderOutfitCard(outfit) {
         <ul class="reason-list">
           ${outfit.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
         </ul>
-        <button class="ghost-button" type="button" data-save-outfit="${outfit.id}">收藏这套</button>
+        <div class="outfit-actions">
+          <button class="ghost-button" type="button" data-save-outfit="${outfit.id}">收藏这套</button>
+          <button class="text-button" type="button" data-wear-outfit="${outfit.id}">记录穿过</button>
+        </div>
       </div>
     </article>
   `;
@@ -1527,7 +1708,10 @@ function renderOutfitCard(outfit) {
 function saveOutfit(outfitId) {
   const outfit = lastGeneratedOutfits.find((entry) => entry.id === outfitId);
   if (!outfit) return;
+  saveOutfitSnapshot(outfit);
+}
 
+function saveOutfitSnapshot(outfit) {
   state.savedOutfits.unshift({
     id: uid(),
     itemIds: outfit.items.map((item) => item.id),
@@ -1540,6 +1724,32 @@ function saveOutfit(outfitId) {
   saveState();
   renderAll();
   toast("已收藏这套搭配");
+}
+
+function markGeneratedOutfitWorn(outfitId) {
+  const outfit = lastGeneratedOutfits.find((entry) => entry.id === outfitId);
+  if (!outfit) return;
+  markItemsWorn(outfit.items.map((item) => item.id));
+}
+
+function markSavedOutfitWorn(outfitId) {
+  const outfit = state.savedOutfits.find((entry) => entry.id === outfitId);
+  if (!outfit) return;
+  markItemsWorn(outfit.itemIds);
+}
+
+function markItemsWorn(itemIds) {
+  const idSet = new Set(itemIds);
+  const now = new Date().toISOString();
+  state.items.forEach((item) => {
+    if (!idSet.has(item.id)) return;
+    item.wearCount = Number(item.wearCount || 0) + 1;
+    item.lastWornAt = now;
+    item.updatedAt = now;
+  });
+  saveState();
+  renderAll();
+  toast("已记录这套穿搭");
 }
 
 function renderSavedOutfits() {
@@ -1575,7 +1785,10 @@ function renderSavedOutfits() {
             <div class="outfit-items">
               ${items.map((item) => `<span class="pill">${escapeHtml(item.name)}</span>`).join("")}
             </div>
-            <button class="text-button danger" type="button" data-delete-saved="${outfit.id}">删除收藏</button>
+            <div class="outfit-actions">
+              <button class="text-button" type="button" data-wear-saved="${outfit.id}">记录穿过</button>
+              <button class="text-button danger" type="button" data-delete-saved="${outfit.id}">删除收藏</button>
+            </div>
           </div>
         </article>
       `;
@@ -1589,6 +1802,9 @@ function renderSavedOutfits() {
       renderAll();
       toast("已删除收藏");
     });
+  });
+  refs.savedOutfits.querySelectorAll("[data-wear-saved]").forEach((button) => {
+    button.addEventListener("click", () => markSavedOutfitWorn(button.dataset.wearSaved));
   });
 }
 
@@ -1724,21 +1940,27 @@ function seedWardrobe() {
     ["白色运动鞋", "shoes", "white", "light", "casual", "all", ["轻便", "常穿"]],
     ["绿色连衣裙", "dress", "green", "light", "date", "summer", ["清爽"]],
     ["棕色皮带", "accessory", "brown", "medium", "commute", "all", ["点缀"]],
-  ].map(([name, category, color, warmth, style, season, tags]) => ({
-    id: uid(),
-    name,
-    category,
-    color,
-    warmth,
-    style,
-    season,
-    tags,
-    rainReady: tags.some((tag) => tag.includes("防水") || tag.includes("雨")),
-    favorite: tags.includes("常穿"),
-    image: placeholderDataImage(color, category),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }));
+  ].map(([name, category, color, warmth, style, season, tags], index) => {
+    const favorite = tags.includes("常穿");
+    const now = new Date();
+    return {
+      id: uid(),
+      name,
+      category,
+      color,
+      warmth,
+      style,
+      season,
+      tags,
+      rainReady: tags.some((tag) => tag.includes("防水") || tag.includes("雨")),
+      favorite,
+      wearCount: favorite ? 2 + (index % 2) : 0,
+      lastWornAt: favorite ? new Date(now.getTime() - (index + 2) * 86400000).toISOString() : null,
+      image: placeholderDataImage(color, category),
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+  });
 
   state.items.unshift(...examples);
   saveState();
@@ -1763,7 +1985,7 @@ function importData(event) {
   reader.onload = () => {
     try {
       const imported = JSON.parse(reader.result);
-      state.items = Array.isArray(imported.items) ? imported.items : [];
+      state.items = normalizeItems(Array.isArray(imported.items) ? imported.items : []);
       state.savedOutfits = Array.isArray(imported.savedOutfits) ? imported.savedOutfits : [];
       state.weather = imported.weather || state.weather;
       saveState();
@@ -1810,6 +2032,26 @@ function huePairs(hues) {
 
 function colorLabel(colorKey) {
   return COLORS[colorKey]?.label || "未设色";
+}
+
+function wearLabel(item) {
+  const count = Number(item.wearCount || 0);
+  if (!count) return "未记录穿过";
+  const date = item.lastWornAt ? ` · ${formatDateShort(item.lastWornAt)}` : "";
+  return `穿过 ${count} 次${date}`;
+}
+
+function daysSince(dateValue) {
+  if (!dateValue) return null;
+  const time = new Date(dateValue).getTime();
+  if (!Number.isFinite(time)) return null;
+  return Math.floor((Date.now() - time) / 86400000);
+}
+
+function formatDateShort(dateValue) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return "未知日期";
+  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
 }
 
 function placeholderBackground(colorKey) {

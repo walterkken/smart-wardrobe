@@ -53,13 +53,42 @@
       </section>
 
       <nav class="tabs" aria-label="功能导航">
-        <button class="tab-button is-active" data-tab="wardrobe" type="button">衣橱</button>
+        <button class="tab-button is-active" data-tab="today" type="button">今日</button>
+        <button class="tab-button" data-tab="wardrobe" type="button">衣橱</button>
         <button class="tab-button" data-tab="recommend" type="button">搭配</button>
         <button class="tab-button" data-tab="weather" type="button">天气</button>
         <button class="tab-button" data-tab="saved" type="button">方案</button>
       </nav>
 
-      <section class="tab-panel is-active" id="tab-wardrobe">
+      <section class="tab-panel is-active" id="tab-today">
+        <div class="today-layout">
+          <section class="panel today-panel" aria-labelledby="todayTitle">
+            <div class="panel-heading today-heading">
+              <div>
+                <h2 id="todayTitle">今日穿搭</h2>
+                <p id="todayWeatherSummary">根据当前天气和衣橱状态推荐一套可穿方案。</p>
+              </div>
+              <div class="today-actions">
+                <button class="ghost-button" id="shuffleTodayBtn" type="button">换一套</button>
+                <button class="primary-button" id="planTodayBtn" type="button">完整推荐</button>
+              </div>
+            </div>
+            <div id="todayOutfit" class="today-outfit"></div>
+          </section>
+
+          <section class="panel insights-panel" aria-labelledby="insightTitle">
+            <div class="panel-heading">
+              <div>
+                <h2 id="insightTitle">衣橱洞察</h2>
+                <p>记录穿过的单品后，这里会显示利用率、缺口和长期闲置单品。</p>
+              </div>
+            </div>
+            <div id="insightGrid" class="insight-grid"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-wardrobe">
         <div class="layout-grid">
           <section class="panel intake-panel" aria-labelledby="intakeTitle">
             <div class="panel-heading">

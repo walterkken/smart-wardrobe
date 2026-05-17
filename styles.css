@@ -126,7 +126,8 @@ small {
 .form-actions,
 .upload-row,
 .switch-row,
-.weather-actions {
+.weather-actions,
+.outfit-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -223,7 +224,7 @@ label.file-label:hover {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   margin-top: 14px;
   padding: 6px;
@@ -256,6 +257,97 @@ label.file-label:hover {
   grid-template-columns: minmax(300px, 410px) minmax(0, 1fr);
   gap: 14px;
   align-items: start;
+}
+
+.today-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.9fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.today-panel,
+.insights-panel {
+  min-height: 420px;
+}
+
+.today-heading {
+  align-items: center;
+}
+
+.today-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.today-outfit {
+  display: grid;
+  gap: 12px;
+}
+
+.today-card {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.today-card .outfit-gallery {
+  min-height: 300px;
+}
+
+.today-card .outfit-thumb,
+.today-card .outfit-thumb img,
+.today-card .outfit-thumb .placeholder-garment {
+  min-height: 150px;
+  height: 150px;
+}
+
+.today-copy {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 16px;
+}
+
+.today-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.insight-card {
+  display: grid;
+  gap: 6px;
+  min-height: 112px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.insight-card strong {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.insight-card span {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.insight-card small {
+  line-height: 1.45;
 }
 
 .recommend-layout,
@@ -788,6 +880,7 @@ label.file-label:focus-within {
 
 @media (max-width: 1020px) {
   .layout-grid,
+  .today-layout,
   .recommend-layout,
   .weather-layout {
     grid-template-columns: 1fr;
@@ -828,7 +921,7 @@ label.file-label:focus-within {
   }
 
   .tabs {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .tab-button {
@@ -844,7 +937,9 @@ label.file-label:focus-within {
   .control-grid,
   .filters,
   .recognition-grid,
-  .rule-grid {
+  .rule-grid,
+  .today-card,
+  .insight-grid {
     grid-template-columns: 1fr;
   }
 
