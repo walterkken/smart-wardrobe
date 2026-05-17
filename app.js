@@ -70,9 +70,11 @@ const refs = {
   recognitionPanel: $("#recognitionPanel"),
   recognitionStatus: $("#recognitionStatus"),
   recognizedColor: $("#recognizedColor"),
+  recognizedCategory: $("#recognizedCategory"),
   recognizedSwatch: $("#recognizedSwatch"),
   recognizedFit: $("#recognizedFit"),
   recognizedStyle: $("#recognizedStyle"),
+  recognizedPalette: $("#recognizedPalette"),
   recognizedTags: $("#recognizedTags"),
   applyRecognitionBtn: $("#applyRecognitionBtn"),
   reanalyzeBtn: $("#reanalyzeBtn"),
@@ -473,9 +475,11 @@ function renderRecognition(result) {
   if (result.loading) {
     refs.recognitionStatus.textContent = "正在分析颜色、轮廓和标签...";
     refs.recognizedColor.textContent = "--";
+    refs.recognizedCategory.textContent = "--";
     refs.recognizedFit.textContent = "--";
     refs.recognizedStyle.textContent = "--";
     refs.recognizedSwatch.style.setProperty("--recognized-swatch", "#dce3e1");
+    refs.recognizedPalette.innerHTML = "";
     refs.recognizedTags.innerHTML = `<span class="pill">分析中</span>`;
     return;
   }
@@ -483,18 +487,27 @@ function renderRecognition(result) {
   if (result.error) {
     refs.recognitionStatus.textContent = result.message;
     refs.recognizedColor.textContent = "--";
+    refs.recognizedCategory.textContent = "--";
     refs.recognizedFit.textContent = "--";
     refs.recognizedStyle.textContent = "--";
     refs.recognizedSwatch.style.setProperty("--recognized-swatch", "#dce3e1");
+    refs.recognizedPalette.innerHTML = "";
     refs.recognizedTags.innerHTML = `<span class="pill">请手动填写</span>`;
     return;
   }
 
-  refs.recognitionStatus.textContent = `置信度 ${result.confidence}% · 基于本地照片分析`;
-  refs.recognizedColor.textContent = colorLabel(result.color);
+  refs.recognitionStatus.textContent = `整体 ${result.confidence}% · 颜色 ${result.colorConfidence}% · 品类 ${result.categoryConfidence}%`;
+  refs.recognizedColor.textContent = result.colorSummary;
+  refs.recognizedCategory.textContent = CATEGORY_LABELS[result.category];
   refs.recognizedFit.textContent = result.fit;
   refs.recognizedStyle.textContent = STYLE_LABELS[result.style];
   refs.recognizedSwatch.style.setProperty("--recognized-swatch", COLORS[result.color]?.hex || result.hex);
+  refs.recognizedPalette.innerHTML = result.palette
+    .map(
+      (entry) =>
+        `<span class="palette-chip" style="--chip-color:${entry.hex}">${colorLabel(entry.key)} ${Math.round(entry.share * 100)}%</span>`,
+    )
+    .join("");
   refs.recognizedTags.innerHTML = result.tags.map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join("");
 }
 
@@ -505,6 +518,7 @@ function applyRecognition() {
   }
 
   refs.itemColor.value = pendingAnalysis.color;
+  refs.itemCategory.value = pendingAnalysis.category;
   refs.itemStyle.value = pendingAnalysis.style;
   refs.itemWarmth.value = pendingAnalysis.warmth;
 
@@ -518,9 +532,9 @@ function applyRecognition() {
   toast("已应用颜色、款式、版型和标签");
 }
 
-async function analyzeWardrobeImage(dataUrl, category) {
+async function analyzeWardrobeImage(dataUrl, selectedCategory) {
   const image = await loadImage(dataUrl);
-  const maxSide = 180;
+  const maxSide = 260;
   const ratio = Math.min(1, maxSide / Math.max(image.width, image.height));
   const width = Math.max(1, Math.round(image.width * ratio));
   const height = Math.max(1, Math.round(image.height * ratio));
@@ -530,37 +544,47 @@ async function analyzeWardrobeImage(dataUrl, category) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(image, 0, 0, width, height);
   const imageData = ctx.getImageData(0, 0, width, height).data;
-  const border = averageBorderColor(imageData, width, height);
-  const foreground = extractForegroundPixels(imageData, width, height, border);
-  const pixels = foreground.pixels.length > 80 ? foreground.pixels : extractCentralPixels(imageData, width, height);
-  const dominant = dominantColor(pixels);
-  const colorKey = nearestPaletteColor(dominant);
-  const hsl = rgbToHsl(dominant.r, dominant.g, dominant.b);
-  const fit = inferFit(foreground, width, height, category);
-  const pattern = inferPattern(pixels);
-  const style = inferVisualStyle({ colorKey, hsl, category, pattern, fit });
-  const warmth = inferVisualWarmth({ colorKey, hsl, category, foreground });
-  const toneTags = visualToneTags({ colorKey, hsl, pattern });
-  const categoryTags = visualCategoryTags(category, fit, style);
-  const tags = uniqueValues([
-    colorLabel(colorKey),
+  const background = buildBackgroundProfile(imageData, width, height);
+  const mask = segmentForeground(imageData, width, height, background);
+  const shape = measureMask(mask, width, height);
+  const pixels = collectMaskedPixels(imageData, width, height, mask, shape);
+  const palette = buildPalette(pixels, 5);
+  const primary = choosePrimaryColor(palette);
+  const hsl = rgbToHsl(primary.rgb.r, primary.rgb.g, primary.rgb.b);
+  const categoryGuess = inferCategory(shape, palette, selectedCategory);
+  const category = categoryGuess.confidence >= 66 ? categoryGuess.category : selectedCategory;
+  const pattern = inferPatternAdvanced(imageData, width, height, mask, palette);
+  const fit = inferFitAdvanced(shape, category);
+  const style = inferVisualStyleAdvanced({ colorKey: primary.key, hsl, category, pattern, fit, palette, shape });
+  const warmth = inferVisualWarmthAdvanced({ colorKey: primary.key, hsl, category, shape, palette });
+  const tags = buildRecognitionTags({
+    category,
+    colorKey: primary.key,
     fit,
-    pattern.label,
-    ...toneTags,
-    ...categoryTags,
-  ]).slice(0, 10);
-  const confidence = Math.round(
-    Math.max(46, Math.min(92, 52 + foreground.coverage * 48 + Math.min(pixels.length / 1800, 1) * 16 - pattern.noisePenalty)),
-  );
+    style,
+    warmth,
+    pattern,
+    palette,
+    hsl,
+    shape,
+  });
+  const colorConfidence = Math.round(clamp(52 + primary.share * 42 + Math.min(pixels.length / 2800, 1) * 10 - pattern.noisePenalty, 45, 96));
+  const categoryConfidence = categoryGuess.confidence;
+  const confidence = Math.round(clamp((colorConfidence * 0.42 + categoryConfidence * 0.28 + shape.confidence * 0.3), 42, 94));
 
   return {
-    color: colorKey,
-    hex: rgbToHex(dominant),
+    color: primary.key,
+    colorSummary: palette.slice(0, 3).map((entry) => colorLabel(entry.key)).join(" + "),
+    hex: primary.hex,
+    category,
     fit,
     style,
     warmth,
     tags,
+    palette: palette.slice(0, 4),
     confidence,
+    colorConfidence,
+    categoryConfidence,
   };
 }
 
@@ -573,108 +597,387 @@ function loadImage(dataUrl) {
   });
 }
 
-function averageBorderColor(data, width, height) {
-  const samples = [];
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 32));
+function buildBackgroundProfile(data, width, height) {
+  const borderPixels = [];
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 48));
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
-      if (x < step * 2 || y < step * 2 || x > width - step * 3 || y > height - step * 3) {
-        samples.push(pixelAt(data, width, x, y));
+      if (x < step * 3 || y < step * 3 || x > width - step * 4 || y > height - step * 4) {
+        borderPixels.push(pixelAt(data, width, x, y));
       }
     }
   }
-  return averageRgb(samples);
+
+  const clusters = clusterRgb(borderPixels, 4, 5)
+    .filter((cluster) => cluster.share > 0.08)
+    .sort((a, b) => b.share - a.share);
+  const main = clusters[0]?.rgb || averageRgb(borderPixels);
+  const mainHsl = rgbToHsl(main.r, main.g, main.b);
+  const plainness = clusters[0]?.share || 0.35;
+  const threshold = mainHsl.l > 0.88 || mainHsl.l < 0.12 ? 38 : plainness > 0.56 ? 44 : 54;
+
+  return {
+    colors: clusters.length ? clusters.map((cluster) => cluster.rgb) : [main],
+    main,
+    threshold,
+    isLight: mainHsl.l > 0.82 && mainHsl.s < 0.22,
+    isDark: mainHsl.l < 0.16,
+  };
 }
 
-function extractForegroundPixels(data, width, height, border) {
-  const pixels = [];
-  let minX = width;
-  let minY = height;
-  let maxX = 0;
-  let maxY = 0;
-  const rowCounts = Array(height).fill(0);
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 100));
+function segmentForeground(data, width, height, background) {
+  const size = width * height;
+  const bgCandidate = new Uint8Array(size);
+  const backgroundMask = new Uint8Array(size);
+  const queue = [];
 
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x += step) {
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
       const rgb = pixelAt(data, width, x, y);
       const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-      const borderDistance = colorDistance(rgb, border);
-      const isBackgroundWhite = border.r > 220 && border.g > 220 && border.b > 220;
-      const differsFromBackground = borderDistance > (isBackgroundWhite ? 30 : 42);
-      const isUsefulPixel = differsFromBackground || (hsl.s > 0.22 && hsl.l < 0.92);
-      if (!isUsefulPixel) continue;
+      const distance = minDistance(rgb, background.colors);
+      const cornerLike = background.isLight && hsl.l > 0.86 && hsl.s < 0.2;
+      const darkBackdrop = background.isDark && hsl.l < 0.13 && hsl.s < 0.24;
+      bgCandidate[index] = distance < background.threshold || cornerLike || darkBackdrop ? 1 : 0;
+    }
+  }
 
-      pixels.push(rgb);
-      rowCounts[y] += 1;
+  const enqueue = (x, y) => {
+    const index = y * width + x;
+    if (backgroundMask[index] || !bgCandidate[index]) return;
+    backgroundMask[index] = 1;
+    queue.push(index);
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 0; y < height; y += 1) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const index = queue[queueIndex];
+    queueIndex += 1;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (x > 0) enqueue(x - 1, y);
+    if (x < width - 1) enqueue(x + 1, y);
+    if (y > 0) enqueue(x, y - 1);
+    if (y < height - 1) enqueue(x, y + 1);
+  }
+
+  const mask = new Uint8Array(size);
+  let count = 0;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const maxDistance = Math.sqrt(centerX ** 2 + centerY ** 2);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const rgb = pixelAt(data, width, x, y);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      const distance = minDistance(rgb, background.colors);
+      const centerBias = 1 - Math.sqrt((x - centerX) ** 2 + (y - centerY) ** 2) / maxDistance;
+      const detachedFromBackground = !backgroundMask[index] && (!bgCandidate[index] || centerBias > 0.48);
+      const usefulNeutral = hsl.l > 0.08 && hsl.l < 0.94;
+      const lightGarmentCandidate = !backgroundMask[index] && centerBias > 0.45 && hsl.l > 0.78 && hsl.l < 0.99 && distance > 6;
+      const usefulColor = hsl.s > 0.1 || distance > background.threshold + 10 || lightGarmentCandidate;
+      if (detachedFromBackground && usefulNeutral && usefulColor) {
+        mask[index] = 1;
+        count += 1;
+      }
+    }
+  }
+
+  if (count / size < 0.025) return fallbackCenterMask(data, width, height, background);
+  return smoothMask(mask, width, height);
+}
+
+function smoothMask(mask, width, height) {
+  const result = new Uint8Array(mask.length);
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      let neighbors = 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          neighbors += mask[(y + dy) * width + x + dx];
+        }
+      }
+      result[y * width + x] = neighbors >= 4 ? 1 : 0;
+    }
+  }
+  return result;
+}
+
+function fallbackCenterMask(data, width, height, background) {
+  const mask = new Uint8Array(width * height);
+  const xStart = Math.floor(width * 0.16);
+  const xEnd = Math.ceil(width * 0.84);
+  const yStart = Math.floor(height * 0.1);
+  const yEnd = Math.ceil(height * 0.9);
+  for (let y = yStart; y < yEnd; y += 1) {
+    for (let x = xStart; x < xEnd; x += 1) {
+      const rgb = pixelAt(data, width, x, y);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      if (hsl.l > 0.96 || hsl.l < 0.04) continue;
+      if (minDistance(rgb, background.colors) < background.threshold && hsl.s < 0.18) continue;
+      mask[y * width + x] = 1;
+    }
+  }
+  return mask;
+}
+
+function measureMask(mask, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  let count = 0;
+  const rowWidths = Array(height).fill(0);
+  const rowMin = Array(height).fill(width);
+  const rowMax = Array(height).fill(-1);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+      count += 1;
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
       maxX = Math.max(maxX, x);
       maxY = Math.max(maxY, y);
+      rowWidths[y] += 1;
+      rowMin[y] = Math.min(rowMin[y], x);
+      rowMax[y] = Math.max(rowMax[y], x);
     }
   }
 
-  const bboxWidth = Math.max(0, maxX - minX + step);
-  const bboxHeight = Math.max(0, maxY - minY + step);
-  const coverage = pixels.length / Math.max(1, (width / step) * (height / step));
+  if (!count) {
+    return {
+      bboxWidth: width * 0.5,
+      bboxHeight: height * 0.5,
+      bboxRatio: 1,
+      coverage: 0,
+      confidence: 42,
+      topWidth: 0,
+      shoulderWidth: 0,
+      midWidth: 0,
+      lowerWidth: 0,
+      bottomWidth: 0,
+      upperMass: 0.5,
+      lowerMass: 0.5,
+      lengthRatio: 0.5,
+      widthRatio: 0.5,
+      symmetry: 0.5,
+    };
+  }
+
+  const bboxWidth = maxX - minX + 1;
+  const bboxHeight = maxY - minY + 1;
+  const bboxRatio = bboxWidth / Math.max(1, bboxHeight);
+  const coverage = count / (width * height);
+  const yAt = (fraction) => clamp(Math.round(minY + bboxHeight * fraction), 0, height - 1);
+  const bandWidth = (fraction) => {
+    const y = yAt(fraction);
+    let total = 0;
+    let rows = 0;
+    for (let dy = -3; dy <= 3; dy += 1) {
+      const row = y + dy;
+      if (row < 0 || row >= height) continue;
+      total += rowWidths[row];
+      rows += 1;
+    }
+    return total / Math.max(1, rows);
+  };
+
+  let upperCount = 0;
+  let lowerCount = 0;
+  const splitY = minY + bboxHeight * 0.52;
+  for (let y = minY; y <= maxY; y += 1) {
+    if (y < splitY) upperCount += rowWidths[y];
+    else lowerCount += rowWidths[y];
+  }
+
+  const leftHalf = countHalf(mask, width, height, minX, maxX, minY, maxY, "left");
+  const rightHalf = countHalf(mask, width, height, minX, maxX, minY, maxY, "right");
+  const symmetry = 1 - Math.abs(leftHalf - rightHalf) / Math.max(1, leftHalf + rightHalf);
 
   return {
-    pixels,
+    minX,
+    minY,
+    maxX,
+    maxY,
     bboxWidth,
     bboxHeight,
-    bboxRatio: bboxHeight ? bboxWidth / bboxHeight : 1,
+    bboxRatio,
     coverage,
-    rowCounts,
+    confidence: Math.round(clamp(48 + coverage * 80 + symmetry * 12, 44, 93)),
+    topWidth: bandWidth(0.08),
+    shoulderWidth: bandWidth(0.22),
+    midWidth: bandWidth(0.5),
+    lowerWidth: bandWidth(0.76),
+    bottomWidth: bandWidth(0.92),
+    upperMass: upperCount / Math.max(1, count),
+    lowerMass: lowerCount / Math.max(1, count),
+    lengthRatio: bboxHeight / height,
+    widthRatio: bboxWidth / width,
+    symmetry,
   };
 }
 
-function extractCentralPixels(data, width, height) {
-  const pixels = [];
-  const xStart = Math.floor(width * 0.18);
-  const xEnd = Math.ceil(width * 0.82);
-  const yStart = Math.floor(height * 0.12);
-  const yEnd = Math.ceil(height * 0.88);
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 90));
+function countHalf(mask, width, height, minX, maxX, minY, maxY, side) {
+  const center = (minX + maxX) / 2;
+  let count = 0;
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (!mask[y * width + x]) continue;
+      if (side === "left" && x <= center) count += 1;
+      if (side === "right" && x > center) count += 1;
+    }
+  }
+  return count;
+}
 
-  for (let y = yStart; y < yEnd; y += step) {
-    for (let x = xStart; x < xEnd; x += step) {
+function collectMaskedPixels(data, width, height, mask, shape) {
+  const pixels = [];
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 130));
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      if (!mask[y * width + x]) continue;
       const rgb = pixelAt(data, width, x, y);
       const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-      if (hsl.l > 0.97 || hsl.l < 0.03) continue;
+      if (hsl.l > 0.98 || hsl.l < 0.025) continue;
       pixels.push(rgb);
+    }
+  }
+  if (pixels.length > 120) return pixels;
+
+  const xStart = Math.floor((shape.minX ?? width * 0.18) + (shape.bboxWidth ?? width * 0.64) * 0.12);
+  const xEnd = Math.ceil((shape.maxX ?? width * 0.82) - (shape.bboxWidth ?? width * 0.64) * 0.12);
+  const yStart = Math.floor((shape.minY ?? height * 0.12) + (shape.bboxHeight ?? height * 0.76) * 0.1);
+  const yEnd = Math.ceil((shape.maxY ?? height * 0.88) - (shape.bboxHeight ?? height * 0.76) * 0.1);
+  for (let y = yStart; y < yEnd; y += step) {
+    for (let x = xStart; x < xEnd; x += step) {
+      if (x < 0 || x >= width || y < 0 || y >= height) continue;
+      pixels.push(pixelAt(data, width, x, y));
     }
   }
   return pixels;
 }
 
-function dominantColor(pixels) {
-  if (!pixels.length) return { r: 140, g: 143, b: 145 };
-  const buckets = new Map();
-  for (const rgb of pixels) {
-    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-    const weight = 0.4 + hsl.s * 1.2 + (1 - Math.abs(hsl.l - 0.5)) * 0.6;
-    const key = `${Math.round(rgb.r / 24) * 24},${Math.round(rgb.g / 24) * 24},${Math.round(rgb.b / 24) * 24}`;
-    const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, weight: 0, count: 0 };
-    bucket.r += rgb.r * weight;
-    bucket.g += rgb.g * weight;
-    bucket.b += rgb.b * weight;
-    bucket.weight += weight;
-    bucket.count += 1;
-    buckets.set(key, bucket);
+function buildPalette(pixels, k) {
+  const clusters = clusterRgb(pixels, k, 8);
+  const merged = new Map();
+  for (const cluster of clusters) {
+    if (cluster.share < 0.025) continue;
+    const key = nearestPaletteColor(cluster.rgb);
+    const current = merged.get(key) || { key, share: 0, rgb: { r: 0, g: 0, b: 0 } };
+    current.rgb.r += cluster.rgb.r * cluster.share;
+    current.rgb.g += cluster.rgb.g * cluster.share;
+    current.rgb.b += cluster.rgb.b * cluster.share;
+    current.share += cluster.share;
+    merged.set(key, current);
   }
 
-  const best = Array.from(buckets.values()).sort((a, b) => b.count * b.weight - a.count * a.weight)[0];
-  return {
-    r: Math.round(best.r / best.weight),
-    g: Math.round(best.g / best.weight),
-    b: Math.round(best.b / best.weight),
-  };
+  const palette = Array.from(merged.values())
+    .map((entry) => ({
+      key: entry.key,
+      share: entry.share,
+      rgb: {
+        r: Math.round(entry.rgb.r / entry.share),
+        g: Math.round(entry.rgb.g / entry.share),
+        b: Math.round(entry.rgb.b / entry.share),
+      },
+    }))
+    .map((entry) => ({
+      ...entry,
+      hex: rgbToHex(entry.rgb),
+      hsl: rgbToHsl(entry.rgb.r, entry.rgb.g, entry.rgb.b),
+    }))
+    .sort((a, b) => b.share - a.share);
+
+  return palette.length
+    ? palette
+    : [{ key: "gray", share: 1, rgb: { r: 140, g: 143, b: 145 }, hex: "#8c8f91", hsl: rgbToHsl(140, 143, 145) }];
+}
+
+function clusterRgb(pixels, k, iterations) {
+  if (!pixels.length) return [];
+  const sample = pixels.length > 5000 ? pixels.filter((_, index) => index % Math.ceil(pixels.length / 5000) === 0) : pixels;
+  const centers = seedCenters(sample, Math.min(k, sample.length));
+
+  for (let run = 0; run < iterations; run += 1) {
+    const groups = centers.map(() => ({ r: 0, g: 0, b: 0, count: 0 }));
+    for (const rgb of sample) {
+      const index = nearestCenter(rgb, centers);
+      const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+      const weight = 0.75 + hsl.s * 0.55 + (1 - Math.abs(hsl.l - 0.52)) * 0.25;
+      groups[index].r += rgb.r * weight;
+      groups[index].g += rgb.g * weight;
+      groups[index].b += rgb.b * weight;
+      groups[index].count += weight;
+    }
+    groups.forEach((group, index) => {
+      if (!group.count) return;
+      centers[index] = {
+        r: Math.round(group.r / group.count),
+        g: Math.round(group.g / group.count),
+        b: Math.round(group.b / group.count),
+      };
+    });
+  }
+
+  const groups = centers.map((center) => ({ rgb: center, count: 0 }));
+  for (const rgb of pixels) {
+    groups[nearestCenter(rgb, centers)].count += 1;
+  }
+  return groups
+    .filter((group) => group.count)
+    .map((group) => ({ ...group, share: group.count / pixels.length }))
+    .sort((a, b) => b.share - a.share);
+}
+
+function seedCenters(pixels, k) {
+  const sorted = [...pixels].sort((a, b) => {
+    const ah = rgbToHsl(a.r, a.g, a.b);
+    const bh = rgbToHsl(b.r, b.g, b.b);
+    return ah.h - bh.h || ah.l - bh.l;
+  });
+  const centers = [];
+  for (let i = 0; i < k; i += 1) {
+    centers.push(sorted[Math.floor(((i + 0.5) / k) * (sorted.length - 1))]);
+  }
+  return centers;
+}
+
+function nearestCenter(rgb, centers) {
+  let best = 0;
+  let bestDistance = Infinity;
+  centers.forEach((center, index) => {
+    const distance = colorDistance(rgb, center);
+    if (distance < bestDistance) {
+      best = index;
+      bestDistance = distance;
+    }
+  });
+  return best;
+}
+
+function choosePrimaryColor(palette) {
+  const colorful = palette.find((entry) => !COLORS[entry.key]?.neutral && entry.share > 0.18);
+  if (palette[0] && COLORS[palette[0].key]?.neutral && palette[0].share < 0.5 && colorful) return colorful;
+  return palette[0];
 }
 
 function nearestPaletteColor(rgb) {
   const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
   if (hsl.l < 0.16) return "black";
-  if (hsl.l > 0.88 && hsl.s < 0.18) return "white";
+  if (hsl.l > 0.78 && hsl.s < 0.14) return "white";
   if (hsl.s < 0.12) return "gray";
 
   let bestKey = "gray";
@@ -694,68 +997,155 @@ function nearestPaletteColor(rgb) {
   return bestKey;
 }
 
-function inferFit(foreground, width, height, category) {
-  if (category === "shoes") return foreground.bboxRatio > 1.5 ? "低帮/横向鞋型" : "厚底/高帮鞋型";
+function inferCategory(shape, palette, selectedCategory) {
+  const ratio = shape.bboxRatio;
+  const verticalRatio = shape.bboxHeight / Math.max(1, shape.bboxWidth);
+  const lowerToShoulder = shape.lowerWidth / Math.max(1, shape.shoulderWidth);
+  const bottomToMid = shape.bottomWidth / Math.max(1, shape.midWidth);
+  const darkShare = palette.filter((entry) => ["black", "navy", "brown", "gray"].includes(entry.key)).reduce((sum, entry) => sum + entry.share, 0);
+
+  if (ratio > 1.55 && shape.lengthRatio < 0.55) return { category: "shoes", confidence: 84 };
+  if (verticalRatio > 2.05 && lowerToShoulder < 1.18 && bottomToMid < 1.25) return { category: "bottom", confidence: 78 };
+  if (verticalRatio > 1.35 && lowerToShoulder > 1.28 && shape.lowerMass > 0.46) return { category: "dress", confidence: 80 };
+  if (verticalRatio > 1.15 && shape.lengthRatio > 0.72 && darkShare > 0.34) return { category: "outer", confidence: 68 };
+  if (shape.coverage < 0.12 && ratio > 0.72 && ratio < 1.38) return { category: "accessory", confidence: 58 };
+  if (shape.shoulderWidth > shape.lowerWidth * 1.12 || shape.upperMass >= shape.lowerMass) return { category: "top", confidence: 70 };
+  return { category: selectedCategory, confidence: selectedCategory === "top" ? 56 : 62 };
+}
+
+function inferFitAdvanced(shape, category) {
+  if (category === "shoes") return shape.bboxRatio > 1.65 ? "低帮/横向鞋型" : "厚底/高帮鞋型";
   if (category === "accessory") return "小件配饰";
 
-  const bboxArea = foreground.bboxWidth * foreground.bboxHeight;
-  const frameArea = width * height;
-  const objectScale = bboxArea / Math.max(1, frameArea);
-  const verticalRatio = foreground.bboxHeight / Math.max(1, foreground.bboxWidth);
+  const objectScale = shape.coverage;
+  const verticalRatio = shape.bboxHeight / Math.max(1, shape.bboxWidth);
 
   if (category === "bottom") {
-    if (verticalRatio > 1.9 && objectScale < 0.42) return "修身/窄版";
-    if (objectScale > 0.58) return "宽松/阔腿";
+    if (verticalRatio > 2.15 && shape.midWidth < shape.bboxWidth * 0.36) return "修身/窄版";
+    if (shape.lowerWidth > shape.shoulderWidth * 1.18 || objectScale > 0.34) return "宽松/阔腿";
     return "直筒版型";
   }
 
   if (category === "dress") {
-    if (foreground.bboxRatio > 0.72) return "A字/宽摆";
+    if (shape.lowerWidth > shape.shoulderWidth * 1.32 || shape.bottomWidth > shape.midWidth * 1.18) return "A字/宽摆";
     return "直筒/收身";
   }
 
-  if (objectScale > 0.58 || foreground.coverage > 0.42) return "宽松/廓形";
-  if (verticalRatio > 1.38 && objectScale < 0.38) return "修身版型";
+  if (category === "outer" && (shape.lengthRatio > 0.68 || shape.coverage > 0.32)) return "长款/外套廓形";
+  if (shape.shoulderWidth > shape.lowerWidth * 1.22 || objectScale > 0.31) return "宽松/廓形";
+  if (verticalRatio > 1.32 && objectScale < 0.22) return "修身版型";
   return "常规版型";
 }
 
-function inferPattern(pixels) {
-  if (pixels.length < 8) return { label: "纯色", noisePenalty: 0 };
-  const sample = pixels.slice(0, 1800);
-  const avg = averageRgb(sample);
-  const variance =
-    sample.reduce((sum, rgb) => sum + colorDistance(rgb, avg), 0) / Math.max(1, sample.length);
-  if (variance > 95) return { label: "图案/拼色", noisePenalty: 8 };
-  if (variance > 58) return { label: "纹理感", noisePenalty: 3 };
+function inferPatternAdvanced(data, width, height, mask, palette) {
+  const colorComplexity = palette.filter((entry) => entry.share > 0.11).length;
+  const edgeDensity = maskedEdgeDensity(data, width, height, mask);
+  const stripe = stripeScore(data, width, height, mask);
+
+  if (stripe.score > 0.2) return { label: stripe.direction === "vertical" ? "竖条纹" : "横条纹", noisePenalty: 6 };
+  if (colorComplexity >= 3 || (palette[1]?.share || 0) > 0.24) return { label: "图案/拼色", noisePenalty: 8 };
+  if (["denim", "blue"].includes(palette[0]?.key) && edgeDensity > 0.13) return { label: "牛仔纹理", noisePenalty: 3 };
+  if (edgeDensity > 0.17) return { label: "纹理感", noisePenalty: 4 };
   return { label: "纯色", noisePenalty: 0 };
 }
 
-function inferVisualStyle({ colorKey, hsl, category, pattern, fit }) {
+function maskedEdgeDensity(data, width, height, mask) {
+  let edges = 0;
+  let total = 0;
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 130));
+  for (let y = step; y < height - step; y += step) {
+    for (let x = step; x < width - step; x += step) {
+      const index = y * width + x;
+      if (!mask[index]) continue;
+      const rgb = pixelAt(data, width, x, y);
+      const right = pixelAt(data, width, x + step, y);
+      const down = pixelAt(data, width, x, y + step);
+      const diff = Math.max(colorDistance(rgb, right), colorDistance(rgb, down));
+      if (diff > 42) edges += 1;
+      total += 1;
+    }
+  }
+  return total ? edges / total : 0;
+}
+
+function stripeScore(data, width, height, mask) {
+  const vertical = stripeAxisScore(data, width, height, mask, "vertical");
+  const horizontal = stripeAxisScore(data, width, height, mask, "horizontal");
+  return vertical > horizontal
+    ? { direction: "vertical", score: vertical }
+    : { direction: "horizontal", score: horizontal };
+}
+
+function stripeAxisScore(data, width, height, mask, axis) {
+  const buckets = axis === "vertical" ? Array(width).fill(null).map(() => []) : Array(height).fill(null).map(() => []);
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 130));
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      if (!mask[y * width + x]) continue;
+      const rgb = pixelAt(data, width, x, y);
+      const l = rgbToHsl(rgb.r, rgb.g, rgb.b).l;
+      buckets[axis === "vertical" ? x : y].push(l);
+    }
+  }
+  const values = buckets.map((bucket) => (bucket.length ? bucket.reduce((sum, value) => sum + value, 0) / bucket.length : null)).filter((value) => value !== null);
+  if (values.length < 8) return 0;
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + Math.abs(value - avg), 0) / values.length;
+  let turns = 0;
+  for (let i = 2; i < values.length; i += 1) {
+    const prev = values[i - 1] - values[i - 2];
+    const curr = values[i] - values[i - 1];
+    if (Math.sign(prev) !== Math.sign(curr) && Math.abs(curr) > 0.025) turns += 1;
+  }
+  return variance * Math.min(1, turns / 10);
+}
+
+function inferVisualStyleAdvanced({ colorKey, hsl, category, pattern, fit, palette, shape }) {
   const neutral = COLORS[colorKey]?.neutral;
   if (category === "shoes" && ["white", "blue", "teal", "gray"].includes(colorKey)) return "sport";
   if (category === "outer" && ["green", "brown", "teal"].includes(colorKey)) return "outdoor";
   if (category === "dress" && ["red", "pink", "purple", "green"].includes(colorKey)) return "date";
+  if (category === "bottom" && ["black", "gray", "navy"].includes(colorKey) && pattern.label === "纯色") return "commute";
   if (neutral && hsl.l < 0.36 && pattern.label === "纯色") return "formal";
-  if (neutral || ["navy", "beige", "brown"].includes(colorKey)) return "commute";
+  if (neutral || ["navy", "beige", "brown"].includes(colorKey)) return shape.symmetry > 0.62 ? "commute" : "casual";
+  if (palette.length > 2 || pattern.label.includes("条纹") || pattern.label.includes("拼色")) return "casual";
   if (fit.includes("宽松") || pattern.label !== "纯色") return "casual";
   if (["red", "pink", "purple"].includes(colorKey) && hsl.s > 0.36) return "date";
   return "casual";
 }
 
-function inferVisualWarmth({ colorKey, hsl, category, foreground }) {
+function inferVisualWarmthAdvanced({ colorKey, hsl, category, shape, palette }) {
   if (category === "shoes" || category === "accessory") return "medium";
-  if (hsl.l < 0.25 || foreground.coverage > 0.48 || ["black", "navy", "brown"].includes(colorKey)) return "warm";
+  const darkShare = palette.filter((entry) => ["black", "navy", "brown"].includes(entry.key)).reduce((sum, entry) => sum + entry.share, 0);
+  if (hsl.l < 0.25 || shape.coverage > 0.34 || darkShare > 0.42 || category === "outer") return "warm";
   if (hsl.l > 0.72 || ["white", "yellow", "pink"].includes(colorKey)) return "light";
   return "medium";
 }
 
-function visualToneTags({ colorKey, hsl, pattern }) {
+function buildRecognitionTags({ category, colorKey, fit, style, warmth, pattern, palette, hsl, shape }) {
+  const tags = [
+    colorLabel(colorKey),
+    ...palette.slice(1, 3).map((entry) => `${colorLabel(entry.key)}点缀`),
+    CATEGORY_LABELS[category],
+    fit,
+    pattern.label,
+    ...visualToneTags({ colorKey, hsl, pattern, palette }),
+    ...visualCategoryTags(category, fit, style),
+    WARMTH_LABELS[warmth],
+  ];
+  if (palette.length > 1 && palette[1].share > 0.16) tags.push("多色搭配");
+  if (shape.symmetry > 0.72) tags.push("轮廓规整");
+  return uniqueValues(tags).slice(0, 12);
+}
+
+function visualToneTags({ colorKey, hsl, pattern, palette }) {
   const tags = [];
   if (COLORS[colorKey]?.neutral) tags.push("中性色");
   if (hsl.l < 0.32) tags.push("深色");
   if (hsl.l > 0.72) tags.push("浅色");
   if (hsl.s > 0.48) tags.push("亮色");
   if (hsl.s < 0.16) tags.push("低饱和");
+  if (palette.some((entry) => entry.key === "denim")) tags.push("牛仔感");
   if (pattern.label !== "纯色") tags.push("有设计感");
   return tags;
 }
@@ -797,6 +1187,10 @@ function averageRgb(pixels) {
 
 function colorDistance(a, b) {
   return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+}
+
+function minDistance(rgb, colors) {
+  return colors.reduce((best, color) => Math.min(best, colorDistance(rgb, color)), Infinity);
 }
 
 function hexToRgb(hex) {
@@ -844,6 +1238,10 @@ function rgbToHsl(r, g, b) {
 
 function uniqueValues(values) {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function readAndResizeImage(file) {

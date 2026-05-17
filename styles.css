@@ -422,7 +422,7 @@ label.file-label:focus-within {
 
 .recognition-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -459,6 +459,37 @@ label.file-label:focus-within {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.palette-strip {
+  display: flex;
+  gap: 8px;
+  min-height: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.palette-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: #3d474a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.palette-chip::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(31, 37, 40, 0.16);
+  border-radius: 999px;
+  background: var(--chip-color, #ddd);
 }
 
 .check-label {
